@@ -1,0 +1,19 @@
+{
+  "name": "GradeLog — CGPA Tracker",
+  "short_name": "GradeLog",
+  "description": "Track your CGPA, plan future semesters, project your graduating grade.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F7F6F3",
+  "theme_color": "#1E3A5F",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
