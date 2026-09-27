@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2A4D7A"/>
+      <stop offset="1" stop-color="#152A45"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="120" fill="url(#bg)"/>
+
+  <!-- Mortarboard top -->
+  <path d="M256 140 L432 208 L256 276 L80 208 Z"
+        fill="#F7F6F3"/>
+
+  <!-- Board underside -->
+  <path d="M160 236 V300 C160 300 200 340 256 340 C312 340 352 300 352 300 V236"
+        fill="none" stroke="#F7F6F3" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- Tassel cord -->
+  <path d="M400 224 V296"
+        stroke="#F7F6F3" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Tassel knob -->
+  <circle cx="400" cy="308" r="16" fill="#F7F6F3"/>
+
+  <!-- Center knob on underside -->
+  <circle cx="256" cy="340" r="10" fill="#F7F6F3"/>
+</svg>
