@@ -542,7 +542,7 @@
     head.innerHTML = `
       <div class="year-head-left">
         <h2>Year ${year}</h2>
-        <span class="year-gpa num">${yearGpa === null ? 'not started' : 'avg ' + fmt(yearGpa)}</span>
+        <span class="year-gpa num">${yearGpa === null ? 'Not started' : 'Avg ' + fmt(yearGpa)}</span>
       </div>
       <div class="year-head-right">
         <button class="year-menu-btn" aria-label="Year actions" tabindex="0">
