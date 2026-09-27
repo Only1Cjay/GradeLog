@@ -133,11 +133,17 @@
 
   function handleMenuAction(action) {
     switch (action) {
-      case 'search':       toast('Search coming in Chunk D', { icon: 'fa-magnifying-glass' }); break;
+      case 'search':       openView('search'); break;
       case 'calculators':  openView('calculators'); break;
       case 'reports':      openView('reports'); break;
-      case 'settings':     toast('Settings coming in Chunk D', { icon: 'fa-gear' }); break;
+      case 'settings':     openView('settings'); break;
       case 'tools':        openToolsSheet(); break;
+      case 'backup':       backupToFile(); break;
+      case 'restore':      restoreFromFile(); break;
+      case 'import-csv':   importCSVFromFile(); break;
+      case 'export-csv':   exportCSV(); break;
+      case 'print':        openView('reports'); break;
+      case 'clear-data':   confirmResetAll(); break;
     }
   }
 
@@ -234,9 +240,10 @@
     const el = document.createElement('div');
     el.className = 'view';
     viewRoot.appendChild(el);
-
     if (name === 'calculators') renderCalculatorsView(el);
     else if (name === 'reports') renderReportsView(el);
+    else if (name === 'search') renderSearchView(el);
+    else if (name === 'settings') renderSettingsView(el);
     else renderPlaceholderView(el, name);
   }
 
@@ -294,16 +301,44 @@
   /* Tools sheet (stub)                                          */
   /* ---------------------------------------------------------- */
   function openToolsSheet() {
+    const ro = state.readOnly;
+
     const sheet = document.createElement('div');
-    sheet.className = 'modal-sheet';
+    sheet.className = 'modal-sheet tools-sheet';
     sheet.innerHTML = `
       <div class="sheet-handle"></div>
       <h3 class="sheet-title">Tools</h3>
-      <div style="padding:24px; text-align:center; color:var(--muted); font-size:13.5px;">
-        Backup, restore, import, export, print — coming in Chunk D.
+      <div class="tools-grid">
+        <button class="tool-tile" data-act="backup" ${ro ? 'disabled' : ''}>
+          <i class="fa-solid fa-cloud-arrow-up"></i><span>Backup</span>
+        </button>
+        <button class="tool-tile" data-act="restore" ${ro ? 'disabled' : ''}>
+          <i class="fa-solid fa-cloud-arrow-down"></i><span>Restore</span>
+        </button>
+        <button class="tool-tile" data-act="import-csv" ${ro ? 'disabled' : ''}>
+          <i class="fa-solid fa-file-import"></i><span>Import CSV</span>
+        </button>
+        <button class="tool-tile" data-act="export-csv">
+          <i class="fa-solid fa-file-export"></i><span>Export CSV</span>
+        </button>
+        <button class="tool-tile" data-act="print">
+          <i class="fa-solid fa-print"></i><span>Print</span>
+        </button>
+        <button class="tool-tile danger" data-act="clear-data" ${ro ? 'disabled' : ''}>
+          <i class="fa-solid fa-trash-can"></i><span>Clear Data</span>
+        </button>
       </div>
     `;
     openModal(sheet);
+
+    sheet.querySelectorAll('.tool-tile').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        const act = btn.dataset.act;
+        closeModal();
+        setTimeout(() => handleMenuAction(act), 100);
+      });
+    });
   }
 
   /* ---------------------------------------------------------- */
@@ -557,21 +592,23 @@
     // --- Header ---
     const head = document.createElement('div');
     head.className = 'sem-head';
+    const statusPill = state.readOnly
+      ? `<span class="sem-status-pill ${active ? 'is-active' : 'is-planned'}">${active ? 'Active' : 'Planned'}</span>`
+      : `<button class="sem-status-pill ${active ? 'is-active' : 'is-planned'}" aria-label="Toggle semester ${semester}">${active ? 'Active' : 'Planned'}</button>`;
+
     head.innerHTML = `
       <div class="sem-head-left">
-        <button class="sem-switch" role="switch" aria-checked="${active}" aria-label="Toggle semester ${semester}" ${state.readOnly ? 'disabled' : ''}>
-          <span></span>
-        </button>
         <h3 class="sem-title">Semester ${semester}</h3>
       </div>
       <div class="sem-head-right">
+        ${statusPill}
         <span class="sem-gpa num ${gpa === null ? 'sem-gpa-empty' : ''}">${gpa === null ? '' : 'GPA ' + fmt(gpa)}</span>
         <span class="chevron ${open ? 'open' : ''}"><i class="fa-solid fa-chevron-down"></i></span>
       </div>
     `;
 
     if (!state.readOnly) {
-      head.querySelector('.sem-switch').addEventListener('click', (e) => {
+      head.querySelector('.sem-status-pill').addEventListener('click', (e) => {
         e.stopPropagation();
         const next = !Storage.isSemesterActive(year, semester);
         Storage.setSemesterActive(year, semester, next);
@@ -580,7 +617,7 @@
     }
 
     head.addEventListener('click', (e) => {
-      if (e.target.closest('.sem-switch')) return;
+      if (e.target.closest('.sem-status-pill')) return;
       const nowOpen = !wrap.classList.contains('open');
       wrap.classList.toggle('open', nowOpen);
       state.openSemesters[`${year}-${semester}`] = nowOpen;
@@ -2014,6 +2051,981 @@
 
     // Clean up blob URL after the tab has loaded
     setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+  /* ============================================================ */
+  /* Chunk D — Search view                                       */
+  /* ============================================================ */
+
+  function renderSearchView(root) {
+    const data = state.data;
+
+    root.innerHTML = `
+      <div class="view-header view-header-search">
+        <button class="view-back" data-act="back" aria-label="Back">
+          <i class="fa-solid fa-arrow-left"></i>
+        </button>
+        <div class="search-input-wrap">
+          <i class="fa-solid fa-magnifying-glass"></i>
+          <input type="text" id="searchInput" placeholder="Search course code…" autocomplete="off" spellcheck="false" autocapitalize="characters">
+          <button class="search-clear" id="searchClear" hidden aria-label="Clear">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+      </div>
+      <div class="view-body" id="searchResults"></div>
+    `;
+
+    root.querySelector('[data-act="back"]').addEventListener('click', closeView);
+
+    const input = root.querySelector('#searchInput');
+    const clearBtn = root.querySelector('#searchClear');
+    const results = root.querySelector('#searchResults');
+
+    setTimeout(() => input.focus(), 100);
+
+    function render() {
+      const q = input.value.trim().toLowerCase();
+      clearBtn.hidden = !q;
+
+      if (!q) {
+        results.innerHTML = `
+          <div class="search-hint">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <div class="search-hint-title">Search your courses</div>
+            <div class="search-hint-sub">Try a code like <strong>PCL 201</strong> or a keyword from the course name.</div>
+          </div>`;
+        return;
+      }
+
+      const matches = data.courses.filter((c) =>
+        (c.courseCode || '').toLowerCase().includes(q)
+      );
+
+      if (!matches.length) {
+        results.innerHTML = `
+          <div class="search-hint">
+            <i class="fa-solid fa-face-frown"></i>
+            <div class="search-hint-title">No matches</div>
+            <div class="search-hint-sub">Nothing found for "<strong>${escapeHTML(q)}</strong>".</div>
+          </div>`;
+        return;
+      }
+
+      const sorted = matches.slice().sort(
+        (a, b) => (a.year - b.year) || (a.semester - b.semester)
+          || (a.courseCode || '').localeCompare(b.courseCode || '')
+      );
+
+      results.innerHTML = '';
+      sorted.forEach((c) => {
+        const scale = data.scale;
+        const gc = gradeClass(c.grade, scale);
+        const row = document.createElement('button');
+        row.className = 'search-result';
+        row.innerHTML = `
+          <span class="search-result-body">
+            <span class="search-result-topic">${highlightMatch(c.courseCode || 'Untitled', q)}</span>
+            <span class="search-result-sub">Year ${c.year}, Semester ${c.semester} · ${c.units} units</span>
+          </span>
+          <span class="course-grade ${gc}">${c.grade || '—'}</span>
+        `;
+        row.addEventListener('click', () => {
+          if (state.readOnly) return;
+          closeView();
+          setTimeout(() => openCourseSheet({
+            year: c.year, semester: c.semester,
+            courseId: c.id, mode: 'edit'
+          }), 120);
+        });
+        results.appendChild(row);
+      });
+    }
+
+    input.addEventListener('input', render);
+    clearBtn.addEventListener('click', () => {
+      input.value = '';
+      input.focus();
+      render();
+    });
+
+    render();
+  }
+
+  function highlightMatch(text, query) {
+    const t = String(text || '');
+    if (!query) return escapeHTML(t);
+    const lc = t.toLowerCase();
+    const idx = lc.indexOf(query.toLowerCase());
+    if (idx === -1) return escapeHTML(t);
+    return escapeHTML(t.slice(0, idx)) +
+           '<mark>' + escapeHTML(t.slice(idx, idx + query.length)) + '</mark>' +
+           escapeHTML(t.slice(idx + query.length));
+  }
+
+  /* ============================================================ */
+  /* Chunk D — Settings view                                     */
+  /* ============================================================ */
+
+  function renderSettingsView(root) {
+    const data = state.data;
+    const settings = data.settings || {};
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const scale = data.scale;
+    const ro = state.readOnly;
+
+    root.innerHTML = `
+      <div class="view-header">
+        <button class="view-back" data-act="back" aria-label="Back">
+          <i class="fa-solid fa-arrow-left"></i>
+        </button>
+        <h2 class="view-title">Settings</h2>
+      </div>
+      <div class="view-body">
+
+        <section class="settings-section">
+          <div class="settings-section-title">Appearance</div>
+          <div class="settings-card">
+            <div class="toggle-row">
+              <div class="toggle-text">
+                <div class="toggle-title">Dark mode</div>
+                <div class="toggle-sub">Easier on the eyes at night</div>
+              </div>
+              <button class="switch" id="setTheme" role="switch" aria-checked="${isDark}">
+                <span></span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-title">Grade scale</div>
+          <div class="settings-card">
+            <div class="segmented scale-segmented" id="scaleSegmented">
+              <button class="seg-btn ${scale === '5.0' ? 'active' : ''}" data-scale="5.0" ${ro ? 'disabled' : ''}>
+                <strong>5.0</strong>
+                <span>Nigerian</span>
+              </button>
+              <button class="seg-btn ${scale === '4.0' ? 'active' : ''}" data-scale="4.0" ${ro ? 'disabled' : ''}>
+                <strong>4.0</strong>
+                <span>US</span>
+              </button>
+            </div>
+            <div class="scale-hint">Switching scale recalculates all GPAs instantly.</div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-title">Student info</div>
+          <div class="settings-card">
+            <label class="settings-field">
+              <span class="settings-field-label">Full name</span>
+              <input type="text" id="setName" placeholder="e.g. Chinedu Johnson" value="${escapeHTML(settings.studentName || '')}" ${ro ? 'disabled' : ''} autocomplete="name">
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-label">Matric number</span>
+              <input type="text" id="setMatric" placeholder="e.g. PHA/2022/0415" value="${escapeHTML(settings.matricNumber || '')}" ${ro ? 'disabled' : ''}>
+            </label>
+            <label class="settings-field">
+              <span class="settings-field-label">Institution</span>
+              <input type="text" id="setInstitution" placeholder="e.g. University of Lagos" value="${escapeHTML(settings.institution || '')}" ${ro ? 'disabled' : ''}>
+            </label>
+            <div class="settings-field-hint">Printed at the top of reports if filled.</div>
+          </div>
+        </section>
+
+        ${!ro ? `
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <div class="settings-section-title">Google Drive</div>
+            <button class="settings-section-help" id="driveHelp" aria-label="Help">
+              <i class="fa-solid fa-circle-question"></i>
+            </button>
+          </div>
+          <div class="settings-card">
+            <div class="drive-block">
+              <label class="drive-field">
+                <span class="drive-field-label">OAuth Client ID</span>
+                <input type="text" id="driveClientId" placeholder="xxxxxxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false" autocapitalize="off">
+              </label>
+              <div class="drive-actions">
+                <button class="drive-btn" data-act="drive-connect" id="driveConnectBtn">
+                  <i class="fa-solid fa-plug"></i><span>Connect</span>
+                </button>
+                <button class="drive-btn primary" data-act="drive-push" id="drivePushBtn">
+                  <i class="fa-solid fa-cloud-arrow-up"></i><span>Push</span>
+                </button>
+                <button class="drive-btn" data-act="drive-pull" id="drivePullBtn">
+                  <i class="fa-solid fa-cloud-arrow-down"></i><span>Pull</span>
+                </button>
+              </div>
+              <div class="drive-status" id="driveStatus">Not connected</div>
+            </div>
+          </div>
+        </section>
+        ` : ''}
+
+        <section class="settings-section">
+          <div class="settings-section-title">About</div>
+          <div class="settings-card">
+            <div class="settings-row static">
+              <i class="fa-solid fa-code-branch"></i>
+              <div class="settings-row-text">
+                <div class="settings-row-title">Version</div>
+                <div class="settings-row-sub" id="appVersion">Loading…</div>
+              </div>
+            </div>
+            <div class="settings-row static">
+              <i class="fa-solid fa-database"></i>
+              <div class="settings-row-text">
+                <div class="settings-row-title">Stored locally</div>
+                <div class="settings-row-sub">Your data never leaves this device unless you enable Drive sync</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        ${!ro ? `
+        <section class="settings-section">
+          <div class="settings-section-title">Danger zone</div>
+          <div class="settings-card">
+            <button class="settings-row danger" data-act="reset-all">
+              <i class="fa-solid fa-triangle-exclamation"></i>
+              <div class="settings-row-text">
+                <div class="settings-row-title">Reset all data</div>
+                <div class="settings-row-sub">Permanently delete every year, semester, and course</div>
+              </div>
+              <i class="fa-solid fa-chevron-right settings-row-chevron"></i>
+            </button>
+          </div>
+        </section>
+        ` : ''}
+
+        <div class="settings-footer">GradeLog · CGPA Tracker</div>
+      </div>
+    `;
+
+    root.querySelector('[data-act="back"]').addEventListener('click', closeView);
+
+    getAppVersion().then((v) => {
+      const el = root.querySelector('#appVersion');
+      if (el) el.textContent = v;
+    });
+
+    // Theme
+    root.querySelector('#setTheme').addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      if (!state.readOnly) {
+        localStorage.setItem(LS.theme, next);
+        Storage.updateSettings({ theme: next });
+        state.data = Storage.getData();
+      }
+      btn.setAttribute('aria-checked', String(next === 'dark'));
+    });
+
+    // Scale segmented
+    root.querySelectorAll('#scaleSegmented .seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (state.readOnly) return;
+        const newScale = btn.dataset.scale;
+        if (newScale === scale) return;
+        Storage.setScale(newScale);
+        refresh();
+        closeView();
+        setTimeout(() => openView('settings'), 80);
+        toast(`Switched to ${newScale} scale`, { type: 'success', icon: 'fa-check' });
+      });
+    });
+
+    // Student info (save on blur)
+    function bindText(id, key) {
+      const input = root.querySelector(id);
+      if (!input) return;
+      input.addEventListener('blur', () => {
+        if (state.readOnly) return;
+        Storage.updateSettings({ [key]: input.value.trim() });
+        state.data = Storage.getData();
+      });
+    }
+    bindText('#setName', 'studentName');
+    bindText('#setMatric', 'matricNumber');
+    bindText('#setInstitution', 'institution');
+
+    // Danger zone
+    const resetBtn = root.querySelector('[data-act="reset-all"]');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        closeView();
+        setTimeout(() => confirmResetAll(), 100);
+      });
+    }
+
+    // Drive block
+    const driveInput = root.querySelector('#driveClientId');
+    if (driveInput) {
+      driveInput.value = getStoredClientId();
+
+      driveInput.addEventListener('blur', () => {
+        setStoredClientId(driveInput.value);
+        updateDriveStatus();
+      });
+      driveInput.addEventListener('change', () => {
+        setStoredClientId(driveInput.value);
+        updateDriveStatus();
+      });
+
+      root.querySelector('#driveHelp').addEventListener('click', openDriveHelp);
+      root.querySelector('#driveConnectBtn').addEventListener('click', driveConnect);
+      root.querySelector('#drivePushBtn').addEventListener('click', drivePush);
+      root.querySelector('#drivePullBtn').addEventListener('click', drivePull);
+
+      updateDriveStatus();
+    }
+  }
+
+  /* -------- Version reader -------- */
+  async function getAppVersion() {
+    try {
+      const res = await fetch(`sw.js?t=${Date.now()}`, { cache: 'no-store' });
+      const text = await res.text();
+      const m = text.match(/CACHE_VERSION\s*=\s*['"]([^'"]+)['"]/);
+      return m ? `v${m[1].replace(/^v/, '')}` : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /* ============================================================ */
+  /* Chunk D — Backup / Restore / CSV                            */
+  /* ============================================================ */
+
+  function backupToFile() {
+    const payload = {
+      app: 'gradelog',
+      schema: 1,
+      exportedAt: new Date().toISOString(),
+      data: Storage.getData()
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gradelog-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Backup saved', { type: 'success', icon: 'fa-cloud-arrow-up' });
+  }
+
+  function restoreFromFile() {
+    pickFile('.json,application/json', async (file) => {
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const incoming = parsed.data || parsed;
+        if (!incoming || !Array.isArray(incoming.courses)) throw new Error('Invalid backup');
+        showRestoreChoice(incoming);
+      } catch (err) {
+        toast(`Restore failed: ${err.message}`, {
+          type: 'error', icon: 'fa-triangle-exclamation', duration: 6000
+        });
+      }
+    });
+  }
+
+  function showRestoreChoice(incoming) {
+    const sheet = document.createElement('div');
+    sheet.className = 'modal-sheet confirm-sheet';
+    sheet.innerHTML = `
+      <div class="sheet-handle"></div>
+      <h3 class="sheet-title">Restore backup</h3>
+      <p class="sheet-body">
+        The backup contains <strong>${incoming.courses.length}</strong>
+        course${incoming.courses.length === 1 ? '' : 's'} across
+        <strong>${(incoming.years || []).length}</strong>
+        year${(incoming.years || []).length === 1 ? '' : 's'}.
+        How should they be applied?
+      </p>
+      <div class="sheet-actions" style="flex-direction:column;">
+        <button class="btn-primary" data-act="replace">Replace everything</button>
+        <button class="btn-ghost" data-act="merge">Merge with current</button>
+        <button class="btn-ghost" data-act="cancel">Cancel</button>
+      </div>
+    `;
+    openModal(sheet);
+
+    sheet.querySelector('[data-act="cancel"]').addEventListener('click', closeModal);
+
+    sheet.querySelector('[data-act="replace"]').addEventListener('click', () => {
+      Storage.setData(incoming);
+      closeModal();
+      refresh();
+      toast(`Restored ${incoming.courses.length} courses`, {
+        type: 'success', icon: 'fa-cloud-arrow-down'
+      });
+    });
+
+    sheet.querySelector('[data-act="merge"]').addEventListener('click', () => {
+      const current = Storage.getData();
+      const byId = new Map(current.courses.map((c) => [c.id, c]));
+      let added = 0, updated = 0;
+      (incoming.courses || []).forEach((c) => {
+        if (byId.has(c.id)) { byId.set(c.id, { ...byId.get(c.id), ...c }); updated++; }
+        else { byId.set(c.id, c); added++; }
+      });
+      current.courses = Array.from(byId.values());
+      current.years = Array.from(new Set([...(current.years || []), ...(incoming.years || [])]))
+        .sort((a, b) => a - b);
+      current.semesters = { ...current.semesters, ...(incoming.semesters || {}) };
+      Storage.setData(current);
+      closeModal();
+      refresh();
+      toast(`Merged: ${added} new, ${updated} updated`, {
+        type: 'success', icon: 'fa-cloud-arrow-down'
+      });
+    });
+  }
+
+  function exportCSV() {
+    const data = state.data;
+    const scale = data.scale;
+    const rows = [['Year', 'Semester', 'Active', 'CourseCode', 'Units', 'Grade', 'GradePoint']];
+    data.courses.forEach((c) => {
+      const active = Storage.isSemesterActive(c.year, c.semester);
+      const pts = c.grade ? Storage.pointsFor(c.grade, scale) : '';
+      rows.push([
+        c.year, c.semester, active ? 'TRUE' : 'FALSE',
+        c.courseCode || '', c.units, c.grade || '', pts
+      ]);
+    });
+    const csv = rows.map((r) =>
+      r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')
+    ).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gradelog-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('CSV exported', { type: 'success', icon: 'fa-file-export' });
+  }
+
+  function importCSVFromFile() {
+    pickFile('.csv,text/csv', async (file) => {
+      try {
+        const text = await file.text();
+        const rows = parseCSV(text);
+        if (!rows.length) throw new Error('Empty file');
+
+        const header = rows[0].map((h) => h.trim());
+        const idx = (name) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+
+        const iYear = idx('Year');
+        const iSem = idx('Semester');
+        const iActive = idx('Active');
+        const iCode = idx('CourseCode') !== -1 ? idx('CourseCode') : idx('Course Code');
+        const iUnits = idx('Units');
+        const iGrade = idx('Grade');
+
+        if (iYear === -1 || iSem === -1 || iCode === -1 || iUnits === -1) {
+          throw new Error('Missing required columns (Year, Semester, CourseCode, Units)');
+        }
+
+        const truthy = (v) => String(v).trim().toLowerCase() === 'true';
+        const current = Storage.getData();
+        const existingKeys = new Set(
+          current.courses.map((c) => `${c.year}|${c.semester}|${(c.courseCode || '').toUpperCase()}`)
+        );
+
+        let imported = 0, skipped = 0;
+        const newCourses = [];
+        const seenYears = new Set(current.years);
+        const seenSemKeys = new Set(Object.keys(current.semesters));
+
+        rows.slice(1).forEach((r) => {
+          const year = Number(r[iYear]);
+          const semester = Number(r[iSem]);
+          const code = (r[iCode] || '').trim();
+          const units = Number(r[iUnits]);
+          const gradeRaw = iGrade !== -1 ? (r[iGrade] || '').trim().toUpperCase() : '';
+
+          if (!year || !semester || !code || !units) return;
+          if (year > Storage.MAX_YEARS || year < 1) return;
+
+          const key = `${year}|${semester}|${code.toUpperCase()}`;
+          if (existingKeys.has(key)) { skipped++; return; }
+
+          const validGrades = Storage.SCALES[current.scale].letters;
+          const grade = validGrades.includes(gradeRaw) ? gradeRaw : null;
+
+          newCourses.push({
+            id: crypto.randomUUID ? crypto.randomUUID() : `csv-${Date.now()}-${imported}`,
+            year, semester, courseCode: code,
+            units, grade,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+
+          seenYears.add(year);
+          seenSemKeys.add(`${year}-1`);
+          seenSemKeys.add(`${year}-2`);
+
+          // If Active column present, use it
+          if (iActive !== -1) {
+            current.semesters[`${year}-${semester}`] = { active: truthy(r[iActive]) };
+          } else if (!current.semesters[`${year}-${semester}`]) {
+            current.semesters[`${year}-${semester}`] = { active: false };
+          }
+
+          imported++;
+        });
+
+        if (!imported) {
+          toast(skipped ? `Skipped ${skipped} duplicate${skipped === 1 ? '' : 's'}` : 'No valid rows found', {
+            type: 'warn', icon: 'fa-triangle-exclamation', duration: 5000
+          });
+          return;
+        }
+
+        current.courses = current.courses.concat(newCourses);
+        current.years = Array.from(seenYears).sort((a, b) => a - b);
+        Storage.setData(current);
+        refresh();
+        toast(`Imported ${imported} course${imported === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''}`, {
+          type: 'success', icon: 'fa-file-import', duration: 5000
+        });
+      } catch (err) {
+        toast(`Import failed: ${err.message}`, {
+          type: 'error', icon: 'fa-triangle-exclamation', duration: 6000
+        });
+      }
+    });
+  }
+
+  function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cur = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { cur += '"'; i++; }
+          else inQuotes = false;
+        } else cur += c;
+      } else {
+        if (c === '"') inQuotes = true;
+        else if (c === ',') { row.push(cur); cur = ''; }
+        else if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+        else if (c === '\r') { /* skip */ }
+        else cur += c;
+      }
+    }
+    if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+    return rows.filter((r) => r.some((c) => c.length));
+  }
+
+  function pickFile(accept, onPick) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = accept;
+    input.style.display = 'none';
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (file) onPick(file);
+      input.remove();
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+
+  /* -------- Reset all -------- */
+  function confirmResetAll() {
+    const sheet = document.createElement('div');
+    sheet.className = 'modal-sheet confirm-sheet';
+    sheet.innerHTML = `
+      <div class="sheet-handle"></div>
+      <h3 class="sheet-title">Reset all data?</h3>
+      <p class="sheet-body">
+        This will permanently delete <strong>every year, semester, and course</strong>.
+        This cannot be undone. Back up first if you're unsure.
+      </p>
+      <label class="confirm-input-label">
+        Type <code>DELETE</code> to confirm
+        <input type="text" id="confirmResetInput" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      </label>
+      <div class="sheet-actions">
+        <button class="btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn-danger" data-act="confirm" disabled>Reset</button>
+      </div>
+    `;
+    openModal(sheet);
+
+    const input = sheet.querySelector('#confirmResetInput');
+    const confirmBtn = sheet.querySelector('[data-act="confirm"]');
+
+    input.addEventListener('input', () => {
+      confirmBtn.disabled = input.value.trim().toUpperCase() !== 'DELETE';
+    });
+
+    sheet.querySelector('[data-act="cancel"]').addEventListener('click', closeModal);
+    confirmBtn.addEventListener('click', () => {
+      Storage.reset();
+      closeModal();
+      if (!$('#viewRoot').hidden) closeView();
+      refresh();
+      toast('All data cleared', { type: 'success', icon: 'fa-broom' });
+    });
+  }
+
+  /* ============================================================ */
+  /* Chunk D — Google Drive sync                                  */
+  /* ============================================================ */
+
+  const DRIVE = {
+    clientIdKey: 'cjay_gdrive_client_id',
+    lastSyncKey: 'gradelog_last_sync',
+    folderName: 'GradeLog',
+    fileName: 'gradelog.json',
+    scope: 'https://www.googleapis.com/auth/drive.file',
+    token: null,
+    tokenClient: null,
+    gapiReady: false,
+    folderId: null,
+    initPromise: null
+  };
+
+  function getStoredClientId() {
+    return localStorage.getItem(DRIVE.clientIdKey) || '';
+  }
+
+  function setStoredClientId(id) {
+    if (id) localStorage.setItem(DRIVE.clientIdKey, id.trim());
+    else localStorage.removeItem(DRIVE.clientIdKey);
+    DRIVE.tokenClient = null;
+    DRIVE.gapiReady = false;
+    DRIVE.folderId = null;
+    DRIVE.token = null;
+    DRIVE.initPromise = null;
+  }
+
+  function getLastSync() {
+    return localStorage.getItem(DRIVE.lastSyncKey) || '';
+  }
+
+  function setLastSync(iso) {
+    localStorage.setItem(DRIVE.lastSyncKey, iso);
+    Storage.updateSettings({ lastSync: iso });
+  }
+
+  function relativeTime(iso) {
+    if (!iso) return '';
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 7) return `${days}d ago`;
+    return new Date(iso).toLocaleDateString();
+  }
+
+  function waitForGlobals(timeoutMs = 12000) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const check = () => {
+        if (typeof gapi !== 'undefined' &&
+            typeof google !== 'undefined' &&
+            google.accounts &&
+            google.accounts.oauth2) {
+          resolve();
+        } else if (Date.now() - start > timeoutMs) {
+          reject(new Error('Google libraries failed to load'));
+        } else {
+          setTimeout(check, 150);
+        }
+      };
+      check();
+    });
+  }
+
+  function initDrive() {
+    if (DRIVE.initPromise) return DRIVE.initPromise;
+
+    DRIVE.initPromise = (async () => {
+      const clientId = getStoredClientId();
+      if (!clientId) throw new Error('No client ID');
+
+      await waitForGlobals();
+
+      if (!DRIVE.gapiReady) {
+        await new Promise((resolve, reject) => {
+          gapi.load('client', {
+            callback: resolve,
+            onerror: () => reject(new Error('gapi.load failed'))
+          });
+        });
+        await gapi.client.init({
+          discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']
+        });
+        DRIVE.gapiReady = true;
+      }
+
+      if (!DRIVE.tokenClient) {
+        DRIVE.tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: DRIVE.scope,
+          callback: () => {}
+        });
+      }
+
+      return true;
+    })();
+
+    DRIVE.initPromise.catch(() => { DRIVE.initPromise = null; });
+    return DRIVE.initPromise;
+  }
+
+  function ensureAccessToken({ forcePrompt = false } = {}) {
+    return new Promise((resolve, reject) => {
+      if (DRIVE.token && !forcePrompt) return resolve(DRIVE.token);
+      if (!DRIVE.tokenClient) return reject(new Error('Drive not initialised'));
+
+      DRIVE.tokenClient.callback = (resp) => {
+        if (resp.error) return reject(new Error(resp.error));
+        DRIVE.token = resp.access_token;
+        gapi.client.setToken({ access_token: resp.access_token });
+        resolve(resp.access_token);
+      };
+
+      DRIVE.tokenClient.requestAccessToken({ prompt: forcePrompt ? 'consent' : '' });
+    });
+  }
+
+  async function getOrCreateFolder() {
+    if (DRIVE.folderId) return DRIVE.folderId;
+
+    const q = `mimeType='application/vnd.google-apps.folder' and name='${DRIVE.folderName}' and trashed=false`;
+    const res = await gapi.client.drive.files.list({
+      q, fields: 'files(id,name)', spaces: 'drive'
+    });
+    const files = res.result.files || [];
+    if (files.length) {
+      DRIVE.folderId = files[0].id;
+      return DRIVE.folderId;
+    }
+
+    const create = await gapi.client.drive.files.create({
+      resource: { name: DRIVE.folderName, mimeType: 'application/vnd.google-apps.folder' },
+      fields: 'id'
+    });
+    DRIVE.folderId = create.result.id;
+    return DRIVE.folderId;
+  }
+
+  async function findDriveFile(folderId) {
+    const q = `name='${DRIVE.fileName}' and '${folderId}' in parents and trashed=false`;
+    const res = await gapi.client.drive.files.list({
+      q, fields: 'files(id,name,modifiedTime)', spaces: 'drive'
+    });
+    const files = res.result.files || [];
+    return files[0] || null;
+  }
+
+  async function driveConnect() {
+    try {
+      await initDrive();
+      await ensureAccessToken({ forcePrompt: true });
+      toast('Connected to Drive', { type: 'success', icon: 'fa-plug' });
+      updateDriveStatus();
+    } catch (err) {
+      toast(`Connect failed: ${err.message}`, {
+        type: 'error', icon: 'fa-triangle-exclamation', duration: 6000
+      });
+    }
+  }
+
+  async function drivePush() {
+    try {
+      await initDrive();
+      await ensureAccessToken();
+      const folderId = await getOrCreateFolder();
+      const file = await findDriveFile(folderId);
+
+      const payload = JSON.stringify({
+        app: 'gradelog',
+        schema: 1,
+        exportedAt: new Date().toISOString(),
+        data: Storage.getData()
+      }, null, 2);
+
+      const boundary = '-------gradelog' + Date.now();
+      const delimiter = '\r\n--' + boundary + '\r\n';
+      const closeDelim = '\r\n--' + boundary + '--';
+
+      const metadata = file
+        ? { name: DRIVE.fileName }
+        : { name: DRIVE.fileName, parents: [folderId] };
+
+      const body =
+        delimiter +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        JSON.stringify(metadata) +
+        delimiter +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        payload +
+        closeDelim;
+
+      await gapi.client.request({
+        path: file ? `/upload/drive/v3/files/${file.id}` : '/upload/drive/v3/files',
+        method: file ? 'PATCH' : 'POST',
+        params: { uploadType: 'multipart' },
+        headers: { 'Content-Type': `multipart/related; boundary="${boundary}"` },
+        body
+      });
+
+      setLastSync(new Date().toISOString());
+      updateDriveStatus();
+      toast('Pushed to Drive', { type: 'success', icon: 'fa-cloud-arrow-up' });
+    } catch (err) {
+      toast(`Push failed: ${err.message}`, {
+        type: 'error', icon: 'fa-triangle-exclamation', duration: 6000
+      });
+    }
+  }
+
+  async function drivePull() {
+    try {
+      await initDrive();
+      await ensureAccessToken();
+      const folderId = await getOrCreateFolder();
+      const file = await findDriveFile(folderId);
+
+      if (!file) {
+        toast('No Drive backup found', { type: 'info', icon: 'fa-circle-info' });
+        return;
+      }
+
+      const res = await gapi.client.drive.files.get({
+        fileId: file.id,
+        alt: 'media'
+      });
+
+      const raw = typeof res.body === 'string' ? res.body : JSON.stringify(res.result);
+      const parsed = JSON.parse(raw);
+      const incoming = parsed.data || parsed;
+
+      if (!incoming || !Array.isArray(incoming.courses)) {
+        throw new Error('Invalid backup on Drive');
+      }
+
+      showDrivePullChoice(incoming, file.modifiedTime);
+    } catch (err) {
+      toast(`Pull failed: ${err.message}`, {
+        type: 'error', icon: 'fa-triangle-exclamation', duration: 6000
+      });
+    }
+  }
+
+  function showDrivePullChoice(incoming, modifiedTime) {
+    const modifiedLabel = modifiedTime
+      ? new Date(modifiedTime).toLocaleString()
+      : 'unknown';
+
+    const sheet = document.createElement('div');
+    sheet.className = 'modal-sheet confirm-sheet';
+    sheet.innerHTML = `
+      <div class="sheet-handle"></div>
+      <h3 class="sheet-title">Pull from Drive</h3>
+      <p class="sheet-body">
+        Cloud backup has <strong>${incoming.courses.length}</strong>
+        course${incoming.courses.length === 1 ? '' : 's'}
+        (last modified ${escapeHTML(modifiedLabel)}).
+        How should they be applied?
+      </p>
+      <div class="sheet-actions" style="flex-direction:column;">
+        <button class="btn-primary" data-act="replace">Replace everything</button>
+        <button class="btn-ghost" data-act="merge">Merge with current</button>
+        <button class="btn-ghost" data-act="cancel">Cancel</button>
+      </div>
+    `;
+    openModal(sheet);
+
+    sheet.querySelector('[data-act="cancel"]').addEventListener('click', closeModal);
+
+    sheet.querySelector('[data-act="replace"]').addEventListener('click', () => {
+      Storage.setData(incoming);
+      setLastSync(new Date().toISOString());
+      closeModal();
+      refresh();
+      updateDriveStatus();
+      toast(`Restored ${incoming.courses.length} courses`, {
+        type: 'success', icon: 'fa-cloud-arrow-down'
+      });
+    });
+
+    sheet.querySelector('[data-act="merge"]').addEventListener('click', () => {
+      const current = Storage.getData();
+      const byId = new Map(current.courses.map((c) => [c.id, c]));
+      let added = 0, updated = 0;
+      (incoming.courses || []).forEach((c) => {
+        if (byId.has(c.id)) { byId.set(c.id, { ...byId.get(c.id), ...c }); updated++; }
+        else { byId.set(c.id, c); added++; }
+      });
+      current.courses = Array.from(byId.values());
+      current.years = Array.from(new Set([...(current.years || []), ...(incoming.years || [])]))
+        .sort((a, b) => a - b);
+      current.semesters = { ...current.semesters, ...(incoming.semesters || {}) };
+      Storage.setData(current);
+      setLastSync(new Date().toISOString());
+      closeModal();
+      refresh();
+      updateDriveStatus();
+      toast(`Merged: ${added} new, ${updated} updated`, {
+        type: 'success', icon: 'fa-cloud-arrow-down'
+      });
+    });
+  }
+
+  function updateDriveStatus() {
+    const el = document.getElementById('driveStatus');
+    if (!el) return;
+    const clientId = getStoredClientId();
+    const lastSync = getLastSync();
+
+    if (!clientId) {
+      el.textContent = 'Paste your Client ID to enable sync';
+    } else if (!lastSync) {
+      el.textContent = 'Ready to sync';
+    } else {
+      el.textContent = `Last synced ${relativeTime(lastSync)}`;
+    }
+  }
+
+  function openDriveHelp() {
+    const sheet = document.createElement('div');
+    sheet.className = 'modal-sheet';
+    sheet.innerHTML = `
+      <div class="sheet-handle"></div>
+      <h3 class="sheet-title">Where do I get a Client ID?</h3>
+      <div class="sheet-body" style="line-height:1.6; font-size:13.5px;">
+        <p style="margin:0 0 12px;">GradeLog syncs via Google Drive using an OAuth Client ID you own. It never leaves your device — stored only in this browser.</p>
+        <p style="margin:0 0 8px;"><strong>1.</strong> Go to <code>console.cloud.google.com</code> → APIs &amp; Services → Credentials.</p>
+        <p style="margin:0 0 8px;"><strong>2.</strong> Create an <strong>OAuth client ID</strong> of type <em>Web application</em>.</p>
+        <p style="margin:0 0 8px;"><strong>3.</strong> Under <em>Authorized JavaScript origins</em>, add your GitHub Pages URL (and <code>http://localhost</code> for dev).</p>
+        <p style="margin:0 0 8px;"><strong>4.</strong> Copy the Client ID (ends in <code>.apps.googleusercontent.com</code>) and paste it above.</p>
+        <p style="margin:0; color:var(--muted);">If you've already set up Drive sync in another CJay app, reuse the same Client ID.</p>
+      </div>
+      <div class="sheet-actions">
+        <button class="btn-primary" data-act="close">Got it</button>
+      </div>
+    `;
+    openModal(sheet);
+    sheet.querySelector('[data-act="close"]').addEventListener('click', closeModal);
   }
 
   /* ---------------------------------------------------------- */
